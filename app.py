@@ -43,6 +43,10 @@ MODELS = {
     "Mistral-Medium-3.5": (os.environ.get("MODEL_MISTRAL_MEDIUM_35_DEPLOYMENT", "mstr-med35"), FOUNDRY_EP, FOUNDRY_KEY),
 }
  
+# The AI tutor model picker has been removed from the UI (per Sharks Academy's
+# request) — we just quietly use the first configured model behind the scenes.
+DEFAULT_MODEL = next(iter(MODELS))
+ 
  
 def ai_ready(model):
     return bool(MODELS[model][1] and MODELS[model][2])
@@ -404,6 +408,96 @@ def get_preferences_for_teacher(teacher_id):
     rows = cursor.fetchall()
     conn.close()
     return rows
+ 
+ 
+# --------------------------------------------------------------------------- #
+# UI — Sharks Academy branding
+# --------------------------------------------------------------------------- #
+_ORG_HEADER_CSS = """
+<style>
+.sharks-header {
+    background: linear-gradient(135deg, #0f2027 0%, #203a43 45%, #00B894 100%);
+    border-radius: 22px;
+    padding: 2rem 2.2rem;
+    color: white;
+    margin-bottom: 1.6rem;
+    box-shadow: 0 12px 34px rgba(15,32,39,0.35);
+    text-align: center;
+}
+.sharks-header h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    letter-spacing: .5px;
+    font-weight: 800;
+}
+.sharks-header p {
+    margin-top: .5rem;
+    opacity: .88;
+    font-size: 1.05rem;
+}
+ 
+/* --- Role selector (Student / Teacher) --- */
+.role-label {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e1e2f;
+    margin-bottom: .5rem;
+}
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button {
+    width: 100%;
+    border-radius: 16px !important;
+    padding: 1.1rem .6rem !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    margin-bottom: .9rem !important;
+    transition: transform .12s ease, box-shadow .12s ease;
+}
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button:hover {
+    transform: translateY(-2px);
+}
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button[kind="primary"] {
+    background: linear-gradient(135deg, #6C5CE7, #00B894) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 8px 20px rgba(108,92,231,.40);
+}
+div[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
+    background: #f4f3fb !important;
+    color: #3d3d54 !important;
+    border: 2px solid #e2dff5 !important;
+}
+</style>
+"""
+ 
+ 
+def _render_org_header():
+    st.markdown(_ORG_HEADER_CSS, unsafe_allow_html=True)
+    st.markdown(
+        """<div class="sharks-header">
+        <h1>🦈 Sharks Academy</h1>
+        <p>Empowering every student, one lecture at a time.</p>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+ 
+ 
+def _render_role_selector():
+    st.sidebar.markdown('<div class="role-label">👋 I am a…</div>', unsafe_allow_html=True)
+    st.session_state.setdefault("role", "Student")
+ 
+    c1, c2 = st.sidebar.columns(2)
+    if c1.button("🎓 Student", key="role_student",
+                 type="primary" if st.session_state.role == "Student" else "secondary",
+                 use_container_width=True):
+        st.session_state.role = "Student"
+        st.rerun()
+    if c2.button("👩‍🏫 Teacher", key="role_teacher",
+                 type="primary" if st.session_state.role == "Teacher" else "secondary",
+                 use_container_width=True):
+        st.session_state.role = "Teacher"
+        st.rerun()
+ 
+    return st.session_state.role
  
  
 # --------------------------------------------------------------------------- #
@@ -832,6 +926,14 @@ def student_signup_wizard(model):
  
 # --------------------------------------------------------------------------- #
 def student_view(model):
+    # Lectures are locked behind sign-up: a student must have an account and
+    # have gone through "Sign up & preferences" before the lecture library
+    # becomes visible.
+    if not st.session_state.get("student_id"):
+        st.info("👋 **Welcome!** Please sign up below to unlock your lectures.")
+        student_signup_wizard(model)
+        return
+ 
     tab_lectures, tab_signup = st.tabs(["🎬 Lectures", "🚀 Sign up & preferences"])
  
     with tab_lectures:
@@ -856,14 +958,16 @@ def student_view(model):
  
 # --------------------------------------------------------------------------- #
 def main():
-    st.set_page_config(page_title="O-Level Study Hub", page_icon="🎓", layout="wide")
+    st.set_page_config(page_title="Sharks Academy · Study Hub", page_icon="🦈", layout="wide")
  
     create_tables()
     seed_subjects()
  
-    st.sidebar.title("🎓 O-Level Study Hub")
-    role = st.sidebar.radio("I am a…", ["Student", "Teacher"], index=0)
-    model = st.sidebar.selectbox("AI tutor model", list(MODELS.keys()))
+    _render_org_header()
+ 
+    st.sidebar.title("🦈 Sharks Academy")
+    role = _render_role_selector()
+    model = DEFAULT_MODEL
     if not ai_ready(model):
         st.sidebar.warning("AI features are off (no key set) — video + notes still work.")
     st.sidebar.caption(f"{len(load_index())} lecture(s) available.")
