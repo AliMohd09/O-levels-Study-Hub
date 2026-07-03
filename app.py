@@ -1,3 +1,4 @@
+
 import os
 import re
 import json
@@ -109,7 +110,7 @@ def parse_json(text):
  
  
 # --------------------------------------------------------------------------- #
-# AI helpers (unchanged)
+# AI helpers
 # --------------------------------------------------------------------------- #
 def _call(model, prompt, system, max_tokens=700):
     deployment, endpoint, key = MODELS[model]
@@ -161,13 +162,27 @@ def make_quiz(model, lec, n=5):
     return data.get("questions") if isinstance(data, dict) else None
  
  
+def generate_welcome_note(model, name, subjects):
+    """Personalized AI-concierge welcome note shown after sign-up — the app's signature touch."""
+    system = ("You are an enthusiastic school orientation concierge who writes short, warm, "
+              "personalized welcome notes for new O-Level students. No corporate tone, no "
+              "generic filler — make it feel handwritten and specific.")
+    prompt = (f"Student name: {name}\n"
+              f"Subjects enrolled: {', '.join(subjects) if subjects else 'none yet'}\n\n"
+              "Write a short welcome note (3-4 sentences): greet them by name, say something "
+              "specific and encouraging about the *combination* of subjects they picked, and "
+              "end with one light, motivating line about their first week.")
+    res = _call(model, prompt, system, max_tokens=220)
+    return res["text"] if res["ok"] else None
+ 
+ 
 @st.cache_data(show_spinner=False)
 def video_bytes(path_str, size):
     return Path(path_str).read_bytes()
  
  
 # --------------------------------------------------------------------------- #
-# Preference-system database (from database.py, adapted for the Streamlit app)
+# Preference-system database
 # --------------------------------------------------------------------------- #
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -256,6 +271,16 @@ def get_student_by_roll(roll_number):
     row = cursor.fetchone()
     conn.close()
     return row  # (student_id, full_name, grade_level, email) or None
+ 
+ 
+def get_student_by_id(student_id):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_id, full_name, roll_number, grade_level, email FROM students WHERE student_id = ?;",
+                   (student_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row  # (student_id, full_name, roll_number, grade_level, email) or None
  
  
 def register_student(full_name, roll_number, grade_level, email):
@@ -452,7 +477,7 @@ def teacher_view():
  
  
 # --------------------------------------------------------------------------- #
-# UI — Student
+# UI — Student: lecture playback
 # --------------------------------------------------------------------------- #
 def _play_lecture(lec, model):
     st.markdown(f"### {lec['title']}")
@@ -524,80 +549,290 @@ def _quiz_ui(lec, model):
             st.balloons()
  
  
-def _preferences_ui():
-    """New: student registration + subject/teacher preference submission."""
-    st.subheader("📝 Choose your subjects & preferred teacher")
+# --------------------------------------------------------------------------- #
+# UI — Student sign-up wizard
+#
+# A branded, 3-step onboarding flow: details -> subjects & teachers -> a
+# generated "digital enrollment card" + an AI concierge welcome note. This is
+# the piece that's meant to stand out from a plain sign-up form.
+# --------------------------------------------------------------------------- #
+_HERO_CSS = """
+<style>
+.sh-hero {
+    background: linear-gradient(135deg, #6C5CE7 0%, #00B894 100%);
+    border-radius: 20px;
+    padding: 2.2rem 2rem;
+    color: white;
+    margin-bottom: 1.4rem;
+    box-shadow: 0 10px 30px rgba(108,92,231,0.30);
+}
+.sh-hero h1 { margin: 0; font-size: 1.9rem; }
+.sh-hero p { opacity: .92; margin-top: .5rem; font-size: 1rem; }
+.sh-step-pill {
+    display: inline-block; padding: .32rem 1rem; border-radius: 999px;
+    font-size: .8rem; font-weight: 600; margin-right: .4rem; margin-bottom: .6rem;
+}
+.sh-step-active { background: #6C5CE7; color: white; }
+.sh-step-done   { background: #00B894; color: white; }
+.sh-step-todo   { background: #eef0f5; color: #8a8f9c; }
+.sh-id-card {
+    background: linear-gradient(135deg, #1e1e2f, #2d2d44);
+    border-radius: 18px; padding: 1.6rem 1.7rem; color: white;
+    max-width: 460px; box-shadow: 0 8px 26px rgba(0,0,0,.28);
+}
+.sh-id-avatar {
+    width: 54px; height: 54px; border-radius: 50%;
+    background: linear-gradient(135deg, #6C5CE7, #00B894);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 1.25rem; margin-bottom: .7rem;
+}
+.sh-id-name { font-size: 1.15rem; font-weight: 700; }
+.sh-id-meta { opacity: .7; font-size: .82rem; margin-bottom: .7rem; }
+.sh-subject-badge {
+    display: inline-block; background: rgba(255,255,255,.12);
+    padding: .28rem .75rem; border-radius: 999px; font-size: .78rem;
+    margin: .2rem .3rem .2rem 0;
+}
+.sh-note {
+    border-left: 4px solid #6C5CE7; background: rgba(108,92,231,.06);
+    padding: .9rem 1.1rem; border-radius: 8px; margin-top: .8rem;
+}
+</style>
+"""
  
-    # --- Step 1: identify (or register) the student by roll number ---
-    if "student_id" not in st.session_state:
-        st.session_state.student_id = None
-        st.session_state.student_name = None
+_STEP_LABELS = ["1 · Your details", "2 · Subjects & teachers", "3 · Confirm"]
  
-    if st.session_state.student_id is None:
-        roll = st.text_input("Enter your roll number to continue", placeholder="e.g. OL-2026-001")
-        if roll.strip():
-            existing = get_student_by_roll(roll.strip())
-            if existing:
+ 
+def _inject_hero_css():
+    st.markdown(_HERO_CSS, unsafe_allow_html=True)
+ 
+ 
+def _render_hero():
+    st.markdown(
+        """<div class="sh-hero">
+        <h1>🚀 Join the Study Hub</h1>
+        <p>Set up your profile once — pick your subjects, choose the teachers you vibe with,
+        and get a personalized welcome note from our AI concierge.</p>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+ 
+ 
+def _render_steps(current):
+    html = ""
+    for i, label in enumerate(_STEP_LABELS, start=1):
+        if i == current:
+            cls = "sh-step-active"
+        elif i < current:
+            cls = "sh-step-done"
+        else:
+            cls = "sh-step-todo"
+        html += f'<span class="sh-step-pill {cls}">{label}</span>'
+    st.markdown(html, unsafe_allow_html=True)
+ 
+ 
+def _init_signup_state():
+    st.session_state.setdefault("signup_step", 1)
+    st.session_state.setdefault("signup_data", {})
+    st.session_state.setdefault("editing_prefs", False)
+ 
+ 
+def _step_details():
+    st.subheader("Step 1 — Tell us about you")
+    roll = st.text_input("Candidate number", value=st.session_state.signup_data.get("roll", ""),
+                         placeholder="e.g. OL-2026-001")
+ 
+    if roll.strip():
+        existing = get_student_by_roll(roll.strip())
+        if existing:
+            st.info(f"Welcome back, **{existing[1]}**! We'll log you straight in — "
+                    "no need to re-enter your details.")
+            if st.button("Continue as this student →", type="primary"):
                 st.session_state.student_id = existing[0]
                 st.session_state.student_name = existing[1]
-                st.success(f"Welcome back, {existing[1]}!")
                 st.rerun()
-            else:
-                st.info("Roll number not found — register below.")
-                with st.form("register_student_form"):
-                    name = st.text_input("Full name")
-                    grade = st.text_input("Grade level", placeholder="e.g. O Level Year 2")
-                    email = st.text_input("Email")
-                    reg_submit = st.form_submit_button("Register", type="primary")
-                    if reg_submit:
-                        if not name.strip():
-                            st.warning("Please enter your name.")
-                        else:
-                            new_id = register_student(name.strip(), roll.strip(), grade.strip(), email.strip())
-                            if new_id:
-                                st.session_state.student_id = new_id
-                                st.session_state.student_name = name.strip()
-                                st.success(f"Registered! Welcome, {name.strip()}.")
-                                st.rerun()
-                            else:
-                                st.error("That roll number is already registered.")
-        return
+            return
  
-    # --- Step 2: logged in — show preference form ---
-    st.caption(f"Signed in as **{st.session_state.student_name}**")
-    if st.button("Switch student"):
-        st.session_state.student_id = None
-        st.session_state.student_name = None
+    name = st.text_input("Full name", value=st.session_state.signup_data.get("name", ""))
+    email = st.text_input("Email address", value=st.session_state.signup_data.get("email", ""),
+                          placeholder="you@example.com")
+    grade = st.text_input("Grade level", value=st.session_state.signup_data.get("grade", ""),
+                          placeholder="e.g. O Level Year 2")
+ 
+    _, c2 = st.columns([1, 1])
+    if c2.button("Next: Subjects →", type="primary"):
+        if not (roll.strip() and name.strip() and email.strip()):
+            st.warning("Candidate number, name and email are required.")
+        elif "@" not in email:
+            st.warning("Please enter a valid email address.")
+        else:
+            st.session_state.signup_data.update({
+                "roll": roll.strip(), "name": name.strip(),
+                "email": email.strip(), "grade": grade.strip(),
+            })
+            st.session_state.signup_step = 2
+            st.rerun()
+ 
+ 
+def _step_subjects():
+    st.subheader("Step 2 — Pick your subjects & preferred teachers")
+    st.caption("Choose every subject you're taking. For each one you can optionally pick "
+              "the teacher you'd like, and rank how important that pick is to you.")
+ 
+    existing_map = st.session_state.signup_data.get("subjects", {})
+    chosen = st.multiselect("Which subjects are you taking?", SUBJECTS,
+                            default=list(existing_map.keys()))
+ 
+    new_map = {}
+    for subj in chosen:
+        teachers = get_teachers_for_subject(subj)
+        names = ["No preference"] + [t[1] for t in teachers]
+        prev = existing_map.get(subj, {})
+        default_idx = names.index(prev["teacher_name"]) if prev.get("teacher_name") in names else 0
+ 
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            t_choice = st.selectbox(f"Preferred teacher — {subj}", names,
+                                    index=default_idx, key=f"tch_{subj}")
+        with col2:
+            pr = st.number_input("Priority", min_value=1, max_value=5,
+                                 value=prev.get("priority", 1), step=1, key=f"pr_{subj}")
+ 
+        teacher_id = None
+        if t_choice != "No preference":
+            teacher_id = next(t[0] for t in teachers if t[1] == t_choice)
+        new_map[subj] = {"teacher_id": teacher_id, "teacher_name": t_choice, "priority": int(pr)}
+ 
+    c1, c2 = st.columns([1, 1])
+    if c1.button("← Back"):
+        if st.session_state.editing_prefs:
+            st.session_state.editing_prefs = False
+        else:
+            st.session_state.signup_step = 1
+        st.rerun()
+    if c2.button("Next: Review →", type="primary"):
+        if not chosen:
+            st.warning("Pick at least one subject.")
+        else:
+            st.session_state.signup_data["subjects"] = new_map
+            st.session_state.signup_step = 3
+            st.rerun()
+ 
+ 
+def _step_confirm(model):
+    st.subheader("Step 3 — Review & confirm")
+    data = st.session_state.signup_data
+    subjects = data.get("subjects", {})
+ 
+    initials = "".join(p[0].upper() for p in (data.get("name") or "?").split()[:2]) or "?"
+    badges = "".join(
+        f'<span class="sh-subject-badge">{s} · {v["teacher_name"]}</span>'
+        for s, v in subjects.items()
+    )
+    st.markdown(f"""
+    <div class="sh-id-card">
+      <div class="sh-id-avatar">{initials}</div>
+      <div class="sh-id-name">{data.get('name', '')}</div>
+      <div class="sh-id-meta">{data.get('roll', '')} · {data.get('grade') or '—'} · {data.get('email', '')}</div>
+      <div>{badges}</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.write("")
+    c1, c2 = st.columns([1, 1])
+    if c1.button("← Back"):
+        st.session_state.signup_step = 2
+        st.rerun()
+    if c2.button("✅ Confirm & join", type="primary"):
+        if st.session_state.get("student_id"):
+            student_id = st.session_state.student_id
+        else:
+            student_id = register_student(data["name"], data["roll"], data.get("grade", ""), data["email"])
+            if student_id is None:
+                existing = get_student_by_roll(data["roll"])
+                student_id = existing[0] if existing else None
+            if student_id is None:
+                st.error("That candidate number is already registered. Please double-check it.")
+                return
+            st.session_state.student_id = student_id
+            st.session_state.student_name = data["name"]
+ 
+        for subj, v in subjects.items():
+            submit_preference(student_id, subj, v["teacher_id"], v["priority"])
+ 
+        if ai_ready(model) and not st.session_state.get("welcome_note"):
+            with st.spinner("Your AI concierge is writing you a welcome note…"):
+                note = generate_welcome_note(model, data.get("name", ""), list(subjects.keys()))
+            if note:
+                st.session_state["welcome_note"] = note
+ 
+        st.session_state.editing_prefs = False
+        st.balloons()
         st.rerun()
  
-    with st.form("preference_form"):
-        subject_choice = st.selectbox("Subject", SUBJECTS)
-        teachers = get_teachers_for_subject(subject_choice)
-        teacher_names = ["No preference"] + [t[1] for t in teachers]
-        teacher_choice = st.selectbox("Preferred teacher", teacher_names)
-        priority = st.number_input("Priority (1 = first choice)", min_value=1, max_value=5, value=1, step=1)
-        pref_submit = st.form_submit_button("Save preference", type="primary")
-        if pref_submit:
-            teacher_id = None
-            if teacher_choice != "No preference":
-                teacher_id = next(t[0] for t in teachers if t[1] == teacher_choice)
-            ok, msg = submit_preference(st.session_state.student_id, subject_choice, teacher_id, int(priority))
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
  
-    st.markdown("#### Your saved preferences")
+def _signup_dashboard():
+    st.markdown(f"### 🎉 You're all set, {st.session_state.student_name}!")
+ 
+    if st.session_state.get("welcome_note"):
+        st.markdown(f'<div class="sh-note">💬 {st.session_state["welcome_note"]}</div>',
+                    unsafe_allow_html=True)
+ 
     rows = view_student_preferences(st.session_state.student_id)
-    if not rows:
-        st.info("No preferences saved yet.")
-    else:
+    if rows:
+        st.markdown("#### Your enrolled subjects")
         for subject_name, teacher_name, priority in rows:
             st.write(f"{priority}. **{subject_name}** → {teacher_name or 'No preference'}")
+    else:
+        st.info("You haven't picked any subjects yet.")
+ 
+    st.divider()
+    c1, c2 = st.columns([1, 1])
+    if c1.button("➕ Update subjects / teachers"):
+        srow = get_student_by_id(st.session_state.student_id)
+        if srow:
+            st.session_state.signup_data = {
+                "name": srow[1], "roll": srow[2], "grade": srow[3] or "", "email": srow[4] or "",
+                "subjects": {
+                    subj: {"teacher_id": None, "teacher_name": teacher or "No preference", "priority": pr}
+                    for subj, teacher, pr in rows
+                },
+            }
+        st.session_state.editing_prefs = True
+        st.session_state.signup_step = 2
+        st.rerun()
+    if c2.button("Switch student"):
+        for k in ("student_id", "student_name", "signup_step", "signup_data",
+                  "editing_prefs", "welcome_note"):
+            st.session_state.pop(k, None)
+        st.rerun()
  
  
+def student_signup_wizard(model):
+    """Entry point for the sign-up / preferences tab."""
+    _inject_hero_css()
+    _render_hero()
+    _init_signup_state()
+ 
+    if st.session_state.get("student_id") and not st.session_state.editing_prefs:
+        _signup_dashboard()
+        return
+ 
+    step = st.session_state.signup_step
+    _render_steps(step)
+    st.write("")
+ 
+    if step == 1:
+        _step_details()
+    elif step == 2:
+        _step_subjects()
+    elif step == 3:
+        _step_confirm(model)
+ 
+ 
+# --------------------------------------------------------------------------- #
 def student_view(model):
-    tab_lectures, tab_prefs = st.tabs(["🎬 Lectures", "📝 Subject & teacher preferences"])
+    tab_lectures, tab_signup = st.tabs(["🎬 Lectures", "🚀 Sign up & preferences"])
  
     with tab_lectures:
         items = load_index()
@@ -615,8 +850,8 @@ def student_view(model):
             st.divider()
             _play_lecture(in_subject[picked], model)
  
-    with tab_prefs:
-        _preferences_ui()
+    with tab_signup:
+        student_signup_wizard(model)
  
  
 # --------------------------------------------------------------------------- #
