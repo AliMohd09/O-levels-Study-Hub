@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -502,73 +501,176 @@ def _render_role_selector():
  
 # --------------------------------------------------------------------------- #
 # UI — Teacher
-# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- # 
 def teacher_view():
-    tab_upload, tab_profile = st.tabs(["📤 Upload lecture", "🏫 My subjects & student picks"])
- 
-    with tab_upload:
-        st.subheader("👩‍🏫 Teacher — add a lecture")
-        with st.form("upload", clear_on_submit=True):
-            title = st.text_input("Lecture title", placeholder="e.g. Photosynthesis — Part 1")
-            subject = st.selectbox("Subject", SUBJECTS)
-            description = st.text_input("One-line description", placeholder="What is this lesson about?")
-            notes = st.text_area("Lecture notes (the AI tutor & quiz use these)", height=180,
-                                 placeholder="Paste or write the key notes for this lecture…")
-            video = st.file_uploader("Video lecture", type=VIDEO_TYPES)
-            submitted = st.form_submit_button("⬆️ Upload lecture", type="primary")
+    st.markdown("## 👩‍🏫 Teacher Hub")
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "✨ Become a Tutor",
+        "🎥 Demo Lecture",
+        "🏆 Top Teachers",
+        "📊 My Students"
+    ])
+
+    # -------------------------------
+    # SESSION STORAGE INIT
+    # -------------------------------
+    if "teacher_profiles" not in st.session_state:
+        st.session_state.teacher_profiles = []
+
+    # -------------------------------
+    # TAB 1 — SIGN UP
+    # -------------------------------
+    with tab1:
+        st.subheader("Become a Tutor")
+
+        with st.form("teacher_signup"):
+            name = st.text_input("Full Name")
+            email = st.text_input("Email")
+            subject = st.selectbox("Subject you teach", SUBJECTS)
+
+            caie_grade = st.selectbox("Your CAIE Grade", ["A*", "A", "B", "C"])
+            experience = st.text_area("Your Experience")
+            bio = st.text_area("Short Bio (students will see this)")
+
+            submitted = st.form_submit_button("🚀 Become a Tutor")
+
             if submitted:
-                if not title.strip() or video is None:
-                    st.warning("Please give a title and choose a video file.")
+                if not name.strip() or not subject:
+                    st.warning("Fill all required fields")
                 else:
-                    with st.spinner("Saving…"):
-                        add_lecture(title, subject, description, notes, video)
-                    st.success(f"Uploaded “{title.strip()}” to {subject}.")
- 
-        items = load_index()
-        if items:
-            st.markdown("#### Your lectures")
-            for it in reversed(items):
-                c1, c2 = st.columns([5, 1])
-                c1.markdown(f"**{it['title']}** · {it['subject']}  \n"
-                            f"<span style='opacity:.7'>{it.get('description','')} · "
-                            f"uploaded {it.get('uploaded_at','')}</span>", unsafe_allow_html=True)
-                if c2.button("🗑️ Delete", key=f"del_{it['id']}"):
-                    delete_lecture(it["id"])
-                    st.rerun()
- 
-    with tab_profile:
-        st.subheader("🏫 Register the subjects you teach")
-        st.caption("This lets students pick you as their preferred teacher for a subject.")
-        with st.form("teacher_profile"):
-            t_name = st.text_input("Your full name")
-            t_email = st.text_input("Your email")
-            t_subjects = st.multiselect("Subjects you teach", SUBJECTS)
-            t_submitted = st.form_submit_button("Save my profile", type="primary")
-            if t_submitted:
-                if not t_name.strip() or not t_subjects:
-                    st.warning("Please enter your name and pick at least one subject.")
-                else:
-                    register_teacher_for_subjects(t_name.strip(), t_email.strip(), t_subjects)
-                    st.success(f"Saved! You're now listed for: {', '.join(t_subjects)}.")
- 
-        st.divider()
-        st.markdown("#### See which students picked you")
-        conn = get_conn()
-        all_teachers = conn.execute("SELECT teacher_id, full_name FROM teachers ORDER BY full_name;").fetchall()
-        conn.close()
-        if not all_teachers:
-            st.info("No teachers registered yet.")
+                    register_teacher_for_subjects(name, email, [subject])
+
+                    # avoid duplicates
+                    existing = next((t for t in st.session_state.teacher_profiles if t["name"] == name), None)
+
+                    if not existing:
+                        st.session_state.teacher_profiles.append({
+                            "name": name,
+                            "email": email,
+                            "subject": subject,
+                            "grade": caie_grade,
+                            "experience": experience,
+                            "bio": bio,
+                            "rating": 0,
+                            "ratings_count": 0,
+                            "students": [],
+                            "demo": None
+                        })
+
+                    st.success("You're now a tutor 🎉")
+
+    # -------------------------------
+    # TAB 2 — DEMO + PUBLIC VIEW
+    # -------------------------------
+    with tab2:
+        st.subheader("Upload Demo Lecture")
+
+        if not st.session_state.teacher_profiles:
+            st.info("You need to sign up first")
         else:
-            names = [t[1] for t in all_teachers]
-            picked = st.selectbox("Choose your name", range(len(all_teachers)), format_func=lambda i: names[i])
-            teacher_id = all_teachers[picked][0]
-            rows = get_preferences_for_teacher(teacher_id)
-            if not rows:
-                st.info("No students have picked you yet.")
+            teacher_names = [t["name"] for t in st.session_state.teacher_profiles]
+            selected = st.selectbox("Select your profile", teacher_names)
+
+            teacher = next(t for t in st.session_state.teacher_profiles if t["name"] == selected)
+
+            demo = st.file_uploader("Upload Demo Video", type=VIDEO_TYPES)
+
+            if st.button("Upload Demo"):
+                if demo:
+                    teacher["demo"] = demo
+                    st.success("Demo uploaded 🎬")
+
+        st.divider()
+        st.markdown("## 🌍 Explore Demo Lectures")
+
+        for t in sorted(st.session_state.teacher_profiles, key=lambda x: -x["rating"]):
+            if t["demo"]:
+                with st.container():
+                    st.markdown(f"### 👩‍🏫 {t['name']} — {t['subject']}")
+                    st.caption(f"⭐ {round(t['rating'],2)} | 🎓 Grade: {t['grade']}")
+                    st.write(t["bio"])
+
+                    st.video(t["demo"])
+
+                    col1, col2 = st.columns(2)
+
+                    # ⭐ Rating system (fixed averaging)
+                    with col1:
+                        rating = st.slider(f"Rate {t['name']}", 1, 5, key=f"rate_{t['name']}")
+                        if st.button("Submit Rating", key=f"ratebtn_{t['name']}"):
+                            t["ratings_count"] += 1
+                            t["rating"] = ((t["rating"] * (t["ratings_count"] - 1)) + rating) / t["ratings_count"]
+                            st.success("Rating submitted ⭐")
+
+                    # 🎯 Enroll system
+                    with col2:
+                        if st.button("Enroll", key=f"enroll_{t['name']}"):
+                            student_name = st.session_state.get("student_name", "Anonymous")
+
+                            # prevent duplicate enroll
+                            if not any(s["name"] == student_name for s in t["students"]):
+                                t["students"].append({
+                                    "name": student_name,
+                                    "progress": "0%",
+                                    "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                })
+
+                            st.success(f"You enrolled with {t['name']} 🎉")
+
+                    st.markdown("---")
+
+    # -------------------------------
+    # TAB 3 — LEADERBOARD
+    # -------------------------------
+    with tab3:
+        st.subheader("🏆 Top Rated Teachers")
+
+        if not st.session_state.teacher_profiles:
+            st.info("No teachers yet")
+        else:
+            sorted_teachers = sorted(
+                st.session_state.teacher_profiles,
+                key=lambda x: -x["rating"]
+            )
+
+            rank = 1
+            for t in sorted_teachers:
+                st.markdown(f"""
+                ### #{rank} 👩‍🏫 {t['name']}
+                **Subject:** {t['subject']}  
+                **⭐ Rating:** {round(t['rating'],2)}  
+                **🎓 Grade:** {t['grade']}  
+                **👥 Students:** {len(t['students'])}
+                """)
+                st.write(t["bio"])
+                st.divider()
+                rank += 1
+
+    # -------------------------------
+    # TAB 4 — STUDENT MANAGEMENT
+    # -------------------------------
+    with tab4:
+        st.subheader("📊 My Students & Notifications")
+
+        if not st.session_state.teacher_profiles:
+            st.info("No data yet")
+        else:
+            teacher_names = [t["name"] for t in st.session_state.teacher_profiles]
+            selected = st.selectbox("Select your profile", teacher_names, key="manage_teacher")
+
+            teacher = next(t for t in st.session_state.teacher_profiles if t["name"] == selected)
+
+            if not teacher["students"]:
+                st.info("No enrollments yet")
             else:
-                for full_name, roll, subject_name, priority in rows:
-                    st.write(f"**{full_name}** ({roll}) — {subject_name}, priority {priority}")
- 
+                for s in teacher["students"]:
+                    st.markdown(f"""
+                    **👤 {s['name']}**  
+                    📅 Joined: {s['joined_at']}  
+                    📈 Progress: {s['progress']}
+                    """)
+                    st.divider() 
  
 # --------------------------------------------------------------------------- #
 # UI — Student: lecture playback
@@ -901,85 +1003,3 @@ def _signup_dashboard():
             st.session_state.pop(k, None)
         st.rerun()
  
- 
-def student_signup_wizard(model):
-    """Entry point for the sign-up / preferences tab."""
-    _inject_hero_css()
-    _render_hero()
-    _init_signup_state()
- 
-    if st.session_state.get("student_id") and not st.session_state.editing_prefs:
-        _signup_dashboard()
-        return
- 
-    step = st.session_state.signup_step
-    _render_steps(step)
-    st.write("")
- 
-    if step == 1:
-        _step_details()
-    elif step == 2:
-        _step_subjects()
-    elif step == 3:
-        _step_confirm(model)
- 
- 
-# --------------------------------------------------------------------------- #
-def student_view(model):
-    # Lectures are locked behind sign-up: a student must have an account and
-    # have gone through "Sign up & preferences" before the lecture library
-    # becomes visible.
-    if not st.session_state.get("student_id"):
-        st.info("👋 **Welcome!** Please sign up below to unlock your lectures.")
-        student_signup_wizard(model)
-        return
- 
-    tab_lectures, tab_signup = st.tabs(["🎬 Lectures", "🚀 Sign up & preferences"])
- 
-    with tab_lectures:
-        items = load_index()
-        if not items:
-            st.info("📭 No lectures yet. Ask your teacher to switch to **Teacher** mode and "
-                    "upload one!")
-        else:
-            subjects = sorted({it["subject"] for it in items})
-            subject = st.selectbox("📚 Choose a subject", subjects)
-            in_subject = [it for it in items if it["subject"] == subject]
- 
-            titles = [it["title"] for it in in_subject]
-            picked = st.selectbox("🎬 Choose a lecture", range(len(in_subject)),
-                                  format_func=lambda i: titles[i])
-            st.divider()
-            _play_lecture(in_subject[picked], model)
- 
-    with tab_signup:
-        student_signup_wizard(model)
- 
- 
-# --------------------------------------------------------------------------- #
-def main():
-    st.set_page_config(page_title="Sharks Academy · Study Hub", page_icon="🦈", layout="wide")
- 
-    create_tables()
-    seed_subjects()
- 
-    _render_org_header()
- 
-    st.sidebar.title("🦈 Sharks Academy")
-    role = _render_role_selector()
-    model = DEFAULT_MODEL
-    if not ai_ready(model):
-        st.sidebar.warning("AI features are off (no key set) — video + notes still work.")
-    st.sidebar.caption(f"{len(load_index())} lecture(s) available.")
- 
-    if role == "Teacher":
-        st.title("👩‍🏫 Teacher dashboard")
-        teacher_view()
-    else:
-        st.title("🎬 Study time!")
-        st.caption("Pick a subject, watch the lecture, and study with your AI tutor.")
-        student_view(model)
- 
- 
-if __name__ == "__main__":
-    main()
